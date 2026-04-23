@@ -1,0 +1,20 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "Busqueda local para Qwen"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "06393aef57c3afb20c80a347b164d7242c1a412ec2d6ff03"
+  limiter: false
+  image_proxy: false
+
+ui:
+  static_use_hash: true

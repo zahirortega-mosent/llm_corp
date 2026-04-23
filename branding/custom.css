@@ -1,0 +1,13 @@
+:root {
+  --brand-name: "Mosent Group";
+}
+
+/* opcional: mejora el salto de línea del nombre en el sidebar */
+nav, aside {
+  word-break: break-word;
+}
+
+/* opcional: si quieres un look un poco más limpio */
+.sidebar, aside {
+  letter-spacing: 0;
+}

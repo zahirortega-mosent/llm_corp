@@ -1,0 +1,103 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    container_name: qwen-secure-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: qwen-secure-api
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/data
+      - ./docs:/app/docs
+      - ./control:/control
+      - ./config:/app/config
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    container_name: qwen-secure-ui
+    depends_on:
+      - api
+    environment:
+      API_BASE_URL: http://api:8000
+      OPEN_WEBUI_URL: http://localhost:${PUBLIC_PORT}
+      STREAMLIT_BASE_PATH: ${SECURE_UI_BASE_PATH}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: qwen-secure-searxng
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
+      - ./data/searxng:/var/cache/searxng
+    cap_drop:
+      - ALL
+
+  open-webui:
+    build:
+      context: ./branding/open-webui
+      dockerfile: Dockerfile
+      args:
+        BRAND_NAME: "Mosent Group"
+    image: mosent-open-webui:local
+    container_name: qwen-secure-open-webui
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      WEBUI_URL: http://localhost:${PUBLIC_PORT}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      WEBUI_NAME: "Mosent Group"
+      ENABLE_WEB_SEARCH: "False"
+      ENABLE_SEARCH_QUERY_GENERATION: "False"
+      ENABLE_SIGNUP: "False"
+      ENABLE_COMMUNITY_SHARING: "False"
+      DO_NOT_TRACK: "True"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/open-webui:/app/backend/data
+      #- ./branding/loader.js:/app/backend/open_webui/static/loader.js:ro
+      #- ./branding/custom.css:/app/backend/open_webui/static/custom.css:ro
+
+  gateway:
+    image: caddy:2.8-alpine
+    container_name: qwen-secure-gateway
+    depends_on:
+      - api
+      - ui
+      - open-webui
+    ports:
+      - "3300:3000"
+    volumes:
+      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro

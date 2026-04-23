@@ -1,0 +1,29 @@
+{
+    auto_https off
+    debug
+}
+
+:3000 {
+    encode gzip zstd
+
+    @corp_api path /corp-api /corp-api/*
+    handle @corp_api {
+        uri strip_prefix /corp-api
+        reverse_proxy api:8000
+    }
+
+    @secure_ui path /secure /secure/*
+    handle @secure_ui {
+        uri strip_prefix /secure
+        reverse_proxy ui:8501
+    }
+
+    @owui_api path /api /api/*
+    handle @owui_api {
+        reverse_proxy open-webui:8080
+    }
+
+    handle {
+        reverse_proxy open-webui:8080
+    }
+}
