@@ -18,6 +18,14 @@ services:
       retries: 15
 
   api:
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 10g
+        reservations:
+          cpus: "4"
+          memory: 6g
     build:
       context: .
       dockerfile: api/Dockerfile
@@ -78,9 +86,9 @@ services:
       WEBUI_URL: http://localhost:${PUBLIC_PORT}
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
       WEBUI_NAME: "Mosent Group"
-      ENABLE_WEB_SEARCH: "False"
-      ENABLE_SEARCH_QUERY_GENERATION: "False"
-      ENABLE_SIGNUP: "False"
+      ENABLE_WEB_SEARCH: "True"
+      ENABLE_SEARCH_QUERY_GENERATION: "True"
+      ENABLE_SIGNUP: "True"
       ENABLE_COMMUNITY_SHARING: "False"
       DO_NOT_TRACK: "True"
     extra_hosts:
