@@ -128,17 +128,30 @@ class QueryService:
             serialized[key] = value.item() if hasattr(value, "item") else value
         return serialized
 
-    def get_movements(self, user: dict[str, Any], filters: dict[str, Any], limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    def get_movements(
+        self,
+        user: dict[str, Any],
+        filters: dict[str, Any],
+        limit: int = 50,
+        offset: int = 0,
+        sort_mode: str = "recent",
+    ) -> list[dict[str, Any]]:
         self.ensure_table_access(user, ["bank_movements"])
         where, params = self.build_where(filters)
         params.update({"limit": limit, "offset": offset})
+
+        if sort_mode == "amount":
+            order_by = "ORDER BY ABS(COALESCE(amount, 0)) DESC, movement_date DESC NULLS LAST"
+        else:
+            order_by = "ORDER BY movement_date DESC NULLS LAST, ABS(COALESCE(amount, 0)) DESC"
+
         sql = text(
             f"""
             SELECT movement_uid, bank, filial, account_number, period, movement_date, settlement_date,
                    reference, folio, description, concept, movement_type, amount, deposit, withdrawal,
                    balance, reconciled, source_filename, source_hash
             FROM bank_movements {where}
-            ORDER BY ABS(COALESCE(amount, 0)) DESC, movement_date DESC NULLS LAST
+            {order_by}
             LIMIT :limit OFFSET :offset
             """
         )
