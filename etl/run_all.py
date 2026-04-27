@@ -73,6 +73,52 @@ def is_blank(value) -> bool:
     return not str(value).strip()
 
 
+def safe_float(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        if pd.isna(value):
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def format_money(value) -> str:
+    if value is None:
+        return "N/D"
+    return f"{value:,.2f}"
+
+
+def sanitize_for_json(value):
+    if isinstance(value, dict):
+        return {k: sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_for_json(v) for v in value]
+    if isinstance(value, tuple):
+        return [sanitize_for_json(v) for v in value]
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    return value
+
+
 def prepare_output_dir(path: str | Path) -> Path:
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -197,8 +243,26 @@ def build_incidents(statements: pd.DataFrame, movements: pd.DataFrame, assignmen
     incidents = []
 
     statement_lookup = statements.set_index("statement_uid")[
-        ["period", "period_start", "period_end", "bank", "filial", "account_number", "source_filename"]
+        [
+            "period",
+            "period_start",
+            "period_end",
+            "bank",
+            "filial",
+            "account_number",
+            "source_filename",
+            "opening_balance",
+            "closing_balance",
+            "total_deposits",
+            "total_withdrawals",
+            "statement_balance_ok",
+            "header_only",
+        ]
     ].to_dict(orient="index")
+
+    movement_counts = {}
+    if not movements.empty and "statement_uid" in movements.columns:
+        movement_counts = movements.groupby("statement_uid").size().to_dict()
 
     assignments_lookup = {}
     if not assignments.empty:
@@ -220,6 +284,7 @@ def build_incidents(statements: pd.DataFrame, movements: pd.DataFrame, assignmen
         movement_uid=None,
         source_filename=None,
         suggested_owner=None,
+        evidence=None,
     ):
         incident_uid = sha(rule_code, str(statement_uid), str(movement_uid), str(source_filename), str(description))
         incidents.append(
@@ -238,36 +303,80 @@ def build_incidents(statements: pd.DataFrame, movements: pd.DataFrame, assignmen
                 "description": description,
                 "status": "abierta",
                 "suggested_owner": suggested_owner,
-                "evidence": None,
+                "evidence": evidence,
             }
         )
 
     for _, row in statements[statements["statement_balance_ok"] == False].iterrows():
+        opening_balance = safe_float(row.get("opening_balance"))
+        closing_balance = safe_float(row.get("closing_balance"))
+        total_deposits = safe_float(row.get("total_deposits"))
+        total_withdrawals = safe_float(row.get("total_withdrawals"))
+
+        calculated_closing_balance = None
+        if opening_balance is not None and total_deposits is not None and total_withdrawals is not None:
+            calculated_closing_balance = opening_balance + total_deposits - total_withdrawals
+
+        difference_vs_declared = None
+        if closing_balance is not None and calculated_closing_balance is not None:
+            difference_vs_declared = closing_balance - calculated_closing_balance
+
+        evidence = {
+            "statement_uid": row.get("statement_uid"),
+            "period": str(row.get("period")) if pd.notna(row.get("period")) else None,
+            "period_start": str(row.get("period_start")) if pd.notna(row.get("period_start")) else None,
+            "period_end": str(row.get("period_end")) if pd.notna(row.get("period_end")) else None,
+            "opening_balance": opening_balance,
+            "closing_balance": closing_balance,
+            "total_deposits": total_deposits,
+            "total_withdrawals": total_withdrawals,
+            "calculated_closing_balance": calculated_closing_balance,
+            "difference_vs_declared": difference_vs_declared,
+            "statement_balance_ok": bool(row.get("statement_balance_ok")),
+            "movement_count_for_statement": safe_int(movement_counts.get(row.get("statement_uid"), 0), default=0),
+        }
+
         add_incident(
             "STATEMENT_BALANCE_MISMATCH",
             "critica",
             "Descuadre de saldo en estado de cuenta",
-            f"El archivo {row['source_filename']} presenta saldo_correcto = false.",
+            (
+                f"El archivo {row['source_filename']} presenta descuadre de saldo. "
+                f"Saldo inicial {format_money(opening_balance)}, depósitos {format_money(total_deposits)}, "
+                f"retiros {format_money(total_withdrawals)}, saldo final declarado {format_money(closing_balance)} "
+                f"y saldo calculado {format_money(calculated_closing_balance)}."
+            ),
             period=row["period"],
             bank=row["bank"],
             filial=row["filial"],
             account_number=row["account_number"],
             statement_uid=row["statement_uid"],
             source_filename=row["source_filename"],
+            evidence=evidence,
         )
 
     for _, row in statements[statements["header_only"] == True].iterrows():
+        evidence = {
+            "statement_uid": row.get("statement_uid"),
+            "period": str(row.get("period")) if pd.notna(row.get("period")) else None,
+            "movement_count_for_statement": int(movement_counts.get(row.get("statement_uid"), 0)),
+            "header_only": bool(row.get("header_only")),
+        }
         add_incident(
             "HEADER_WITHOUT_MOVEMENTS",
             "alta",
             "Estado de cuenta sin movimientos hijos",
-            f"El archivo {row['source_filename']} se cargó como cabecera sin movimientos normalizados.",
+            (
+                f"El archivo {row['source_filename']} se cargó como cabecera sin movimientos normalizados. "
+                f"Movimientos asociados detectados: {int(movement_counts.get(row.get('statement_uid'), 0))}."
+            ),
             period=row["period"],
             bank=row["bank"],
             filial=row["filial"],
             account_number=row["account_number"],
             statement_uid=row["statement_uid"],
             source_filename=row["source_filename"],
+            evidence=evidence,
         )
 
     for _, row in statements[~statements["source_filename"].astype(str).str.match(STATEMENT_PATH_PATTERN, na=False)].iterrows():
@@ -548,8 +657,25 @@ def insert_knowledge(engine, snippets: list[dict]) -> None:
     clean = []
     for item in snippets:
         row = dict(item)
-        if "tags" in row and isinstance(row["tags"], (dict, list)):
-            row["tags"] = json.dumps(row["tags"], ensure_ascii=False)
+        tags = row.get("tags")
+
+        if tags is None:
+            row["tags"] = []
+        elif isinstance(tags, str):
+            parsed = None
+            try:
+                parsed = json.loads(tags)
+            except Exception:
+                parsed = None
+
+            if isinstance(parsed, list):
+                row["tags"] = [str(x) for x in parsed if str(x).strip()]
+            else:
+                row["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, (list, tuple, set)):
+            row["tags"] = [str(x) for x in tags if str(x).strip()]
+        else:
+            row["tags"] = [str(tags)]
         clean.append(row)
 
     with engine.begin() as conn:
@@ -745,7 +871,6 @@ def insert_incidents(engine, incidents: pd.DataFrame, chunksize: int = 500) -> N
 
     frame = frame[cols].copy()
     frame = frame.where(pd.notna(frame), None)
-    frame["evidence"] = None
 
     records = frame.to_dict(orient="records")
 
@@ -753,7 +878,13 @@ def insert_incidents(engine, incidents: pd.DataFrame, chunksize: int = 500) -> N
         for i in range(0, len(records), chunksize):
             batch = records[i:i + chunksize]
             for row in batch:
-                row["evidence"] = None
+                if row.get("evidence") is not None:
+                    row["evidence"] = json.dumps(
+                        sanitize_for_json(row["evidence"]),
+                        ensure_ascii=False,
+                        default=str,
+                        allow_nan=False,
+                    )
             conn.execute(insert_sql, batch)
 
 

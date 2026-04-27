@@ -1,0 +1,7 @@
+object_name,total_rows,sample_csv,error
+dbo.ConciliacionBancaria,3582,/data/output/probe_dbo_ConciliacionBancaria.csv,
+dbo.MovimientosFinancieros,151777355,/data/output/probe_dbo_MovimientosFinancieros.csv,
+dbo.MovimientosFinancieros_Corporativo,191005,/data/output/probe_dbo_MovimientosFinancieros_Corporativo.csv,
+dbo.vwMovimientosFinancierosPABS,196565,/data/output/probe_dbo_vwMovimientosFinancierosPABS.csv,
+curated.fact_account_move_line,2934458,/data/output/probe_curated_fact_account_move_line.csv,
+staging.odoo_account_move_line,457462,/data/output/probe_staging_odoo_account_move_line.csv,

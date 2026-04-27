@@ -164,16 +164,37 @@ class AuthService:
                         {"role_name": role_name, "table_name": table_name, "can_read": can_read},
                     )
 
-            admin_exists = conn.execute(
-                text("SELECT 1 FROM app_users WHERE username = :username LIMIT 1"),
+            admin_row = conn.execute(
+                text("SELECT user_pk FROM app_users WHERE username = :username LIMIT 1"),
                 {"username": settings.admin_username},
-            ).scalar()
-            if not admin_exists:
+            ).mappings().first()
+            if not admin_row:
                 conn.execute(
                     text(
                         """
                         INSERT INTO app_users(username, full_name, email, password_hash, is_active, web_access_enabled)
                         VALUES (:username, :full_name, :email, :password_hash, TRUE, TRUE)
+                        """
+                    ),
+                    {
+                        "username": settings.admin_username,
+                        "full_name": settings.admin_full_name,
+                        "email": settings.admin_email,
+                        "password_hash": self._hash_password(settings.admin_password),
+                    },
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE app_users
+                        SET full_name = :full_name,
+                            email = :email,
+                            password_hash = :password_hash,
+                            is_active = TRUE,
+                            web_access_enabled = TRUE,
+                            updated_at = NOW()
+                        WHERE username = :username
                         """
                     ),
                     {

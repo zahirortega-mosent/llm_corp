@@ -108,7 +108,7 @@ def parse_question_filters(question: str, metadata: Dict[str, Any]) -> Dict[str,
         intents.add("rules")
     if any(term in question_norm for term in ["conciliador", "consolidador", "segun el sistema", "segun conciliador", "cotejar", "comparar", "segun codigo"]):
         intents.add("knowledge")
-    if any(term in question_norm for term in ["primero", "prioridad", "urgente"]):
+    if any(term in question_norm for term in ["primero", "primer", "primera", "prioridad", "urgente", "detallame", "detalle", "desglosa"]):
         intents.add("priority")
     if not intents:
         intents.add("summary")
