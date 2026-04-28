@@ -34,12 +34,14 @@ class AskResponse(BaseModel):
     confidence: Optional[float] = None
     used_llm: bool = False
     model_used: Optional[str] = None
+    used_memory: bool = False
     used_fallback: bool
     web_used: bool
     web_allowed: bool
     web_query: Optional[str] = None
     answer: str
-    context: dict[str, Any]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    context: Optional[dict[str, Any]] = None
 
 
 class UserCreateRequest(BaseModel):

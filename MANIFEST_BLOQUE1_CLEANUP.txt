@@ -1,0 +1,30 @@
+Limpieza post Bloque 1: contexto publico compacto y pruebas anti-heuristica.
+
+Archivos modificados:
+- api/app/services/answer_service.py
+- api/app/schemas.py
+- api/Dockerfile
+- scripts/smoke_test_chat.py
+
+Archivos nuevos:
+- api/requirements-dev.txt
+- tests/test_router_not_heuristic.py
+- tests/test_response_debug_context.py
+- scripts/smoke_test_router_questions.py
+- BLOQUE1_CLEANUP_RUNBOOK.md
+- PREGUNTAS_TEST_NO_HEURISTICO_BLOQUE1.md
+- MANIFEST_BLOQUE1_CLEANUP.txt
+
+No toca:
+- db/init/003_indexes.sql
+- parser de fechas del Bloque 1
+- query_service.py
+- answer_composer.py
+- router schema ya creado
+
+Reglas conservadas:
+- Conteos exactos no usan LLM.
+- Fechas explicitas se respetan.
+- SQL directo solo para rutas exactas.
+- Contexto grande no se publica por defecto.
+- No se agregan valores dummy.

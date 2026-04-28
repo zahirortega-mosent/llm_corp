@@ -88,6 +88,116 @@ def _json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "si", "sí", "on", "debug"}
+
+
+def _debug_enabled(options: dict[str, Any] | None) -> bool:
+    options = options or {}
+    return _truthy(options.get("debug"))
+
+
+def _short_periods(periods: list[Any] | tuple[Any, ...] | None) -> list[str]:
+    return [str(item)[:7] for item in (periods or []) if item is not None]
+
+
+def _clean_filters(filters: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in (filters or {}).items() if value not in (None, "", [], {})}
+
+
+def _public_metadata(
+    filters: dict[str, Any],
+    parsed: dict[str, Any],
+    route: RouteDecision,
+    metadata: dict[str, Any],
+    evidence: dict[str, Any] | None,
+    tools_used: list[str] | None,
+) -> dict[str, Any]:
+    """Metadata estable y pequena para Open WebUI.
+
+    No publica evidencia completa, muestras de cuentas ni contexto interno.
+    El contexto grande se entrega solo con options.debug=true.
+    """
+    evidence = evidence or {}
+    available_periods = _short_periods(metadata.get("periods"))
+    filter_resolution = parsed.get("filter_resolution") or route.filter_resolution or {}
+    row_count = None
+    if isinstance(evidence.get("rows"), list):
+        row_count = len(evidence["rows"])
+    elif isinstance(evidence.get("summary"), dict):
+        row_count = 1
+
+    public: dict[str, Any] = {
+        "filters": _clean_filters(filters),
+        "filter_resolution": filter_resolution,
+        "available_periods": available_periods,
+        "tools_used": tools_used or [],
+        "row_count": row_count,
+    }
+    if route.group_by:
+        public["group_by"] = route.group_by
+    if route.metric:
+        public["metric"] = route.metric
+    return public
+
+
+def _build_chat_response(
+    *,
+    question: str,
+    conversation_id: str | None,
+    filters: dict[str, Any],
+    parsed: dict[str, Any],
+    route: RouteDecision,
+    answer: str,
+    metadata: dict[str, Any],
+    evidence: dict[str, Any] | None,
+    tools_used: list[str] | None,
+    used_llm: bool,
+    model_used: str | None,
+    used_fallback: bool,
+    web_used: bool,
+    web_allowed: bool,
+    web_query: str | None,
+    debug: bool,
+    context: dict[str, Any] | None = None,
+    llm_error: str | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "question": question,
+        "conversation_id": conversation_id,
+        "filters": filters,
+        "filter_resolution": parsed.get("filter_resolution") or {},
+        "route": route.intent.value,
+        "intent": route.intent.value,
+        "confidence": route.confidence,
+        "used_llm": used_llm,
+        "model_used": model_used,
+        "used_memory": bool(route.requires_memory),
+        "used_fallback": used_fallback,
+        "web_used": web_used,
+        "web_allowed": web_allowed,
+        "web_query": web_query,
+        "answer": answer,
+        "metadata": _public_metadata(
+            filters=filters,
+            parsed=parsed,
+            route=route,
+            metadata=metadata,
+            evidence=evidence,
+            tools_used=tools_used,
+        ),
+    }
+    if debug:
+        response["context"] = context or {}
+        if llm_error:
+            response["llm_error"] = llm_error
+    return response
+
+
 def _normalized_question(value: str) -> str:
     return " ".join(str(value or "").lower().split())
 
@@ -265,6 +375,7 @@ class AnswerService:
             route=route,
             use_web=use_web,
             conversation_id=conversation_id,
+            options=options,
         )
 
     def _answer_direct_sql(
@@ -329,29 +440,33 @@ class AnswerService:
             tools_used=tools_used,
             model_used=None,
         )
-        return {
-            "question": question,
-            "conversation_id": conversation_id,
-            "filters": filters,
-            "filter_resolution": parsed.get("filter_resolution") or {},
-            "route": route.intent.value,
-            "intent": route.intent.value,
-            "confidence": route.confidence,
-            "used_llm": False,
-            "model_used": None,
-            "used_fallback": False,
-            "web_used": False,
-            "web_allowed": False,
-            "web_query": None,
-            "answer": answer,
-            "context": {
-                "evidence": evidence,
-                "metadata": metadata,
-                "parsed": parsed,
-                "route": route.to_dict(),
-                "tools_used": tools_used,
-            },
+        debug = _debug_enabled(options)
+        context = {
+            "evidence": evidence,
+            "metadata": metadata,
+            "parsed": parsed,
+            "route": route.to_dict(),
+            "tools_used": tools_used,
         }
+        return _build_chat_response(
+            question=question,
+            conversation_id=conversation_id,
+            filters=filters,
+            parsed=parsed,
+            route=route,
+            answer=answer,
+            metadata=metadata,
+            evidence=evidence,
+            tools_used=tools_used,
+            used_llm=False,
+            model_used=None,
+            used_fallback=False,
+            web_used=False,
+            web_allowed=False,
+            web_query=None,
+            debug=debug,
+            context=context,
+        )
 
     def _answer_with_llm(
         self,
@@ -363,6 +478,7 @@ class AnswerService:
         route: RouteDecision,
         use_web: bool,
         conversation_id: str | None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         intents = parsed.get("intents") or ["summary"]
         wants_incidents = any(intent in intents for intent in ["incidents", "priority", "summary"])
@@ -440,6 +556,20 @@ class AnswerService:
 
         compact_web_results = _compact_rows(web_results, 4, ["title", "snippet", "url"], 220)
 
+        tools_used = ["get_summary"]
+        if wants_movements:
+            tools_used.extend(["get_movements_recent", "get_movements_amount", "get_top_movement_entities"])
+        if wants_incidents:
+            tools_used.extend(["get_incidents_summary", "get_incidents_details", "get_top_accounts_by_incidents"])
+        if wants_rules:
+            tools_used.append("get_relevant_rules")
+        if wants_knowledge:
+            tools_used.append("search_knowledge")
+        if wants_files:
+            tools_used.append("get_files")
+        if web_used:
+            tools_used.append("web_search_service.search_concepts")
+
         context = {
             "summary": summary,
             "recent_movements": compact_recent_movements,
@@ -460,6 +590,7 @@ class AnswerService:
             "route": route.to_dict(),
             "web_results": compact_web_results,
             "web_query": web_query,
+            "tools_used": tools_used,
         }
 
         user_prompt = f"""
@@ -533,22 +664,37 @@ Instrucción final:
             used_fallback = True
             llm_error = str(exc)
 
-        self.query_service.write_audit(question, filters, used_fallback, answer, route=route.to_dict(), model_used="configured_default_llm")
-        return {
-            "question": question,
-            "conversation_id": conversation_id,
-            "filters": filters,
-            "filter_resolution": parsed.get("filter_resolution") or {},
-            "route": route.intent.value,
-            "intent": route.intent.value,
-            "confidence": route.confidence,
-            "used_llm": not used_fallback,
-            "model_used": "configured_default_llm" if not used_fallback else None,
-            "used_fallback": used_fallback,
-            "web_used": web_used,
-            "web_allowed": web_allowed,
-            "web_query": web_query,
-            "answer": answer,
-            "context": context,
-            "llm_error": llm_error,
+        self.query_service.write_audit(
+            question,
+            filters,
+            used_fallback,
+            answer,
+            route=route.to_dict(),
+            tools_used=tools_used,
+            model_used="configured_default_llm",
+        )
+        debug = _debug_enabled(options)
+        evidence = {
+            "summary": summary,
+            "rows": compact_recent_movements or incident_summary or compact_knowledge or [],
         }
+        return _build_chat_response(
+            question=question,
+            conversation_id=conversation_id,
+            filters=filters,
+            parsed=parsed,
+            route=route,
+            answer=answer,
+            metadata=metadata,
+            evidence=evidence,
+            tools_used=tools_used,
+            used_llm=not used_fallback,
+            model_used="configured_default_llm" if not used_fallback else None,
+            used_fallback=used_fallback,
+            web_used=web_used,
+            web_allowed=web_allowed,
+            web_query=web_query,
+            debug=debug,
+            context=context,
+            llm_error=llm_error,
+        )
