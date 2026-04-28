@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 900
     llm_temperature: float = 0.1
 
+    enable_new_router: bool = True
+    enable_llm_classifier: bool = False
+    enable_institutional_memory: bool = False
+    enable_scope_enforcement: bool = False
+    enable_context_resolver: bool = False
+
+    llm_fast_model: str = "qwen3:4b"
+    llm_analyst_model: str = "qwen3:14b"
+    llm_classifier_model: str = "qwen3:4b"
+    llm_embedding_model: str = "qwen3-embedding:0.6b"
+    llm_default_context: int = 8192
+    llm_long_context: int = 16384
+    llm_classifier_timeout_seconds: int = 30
+    llm_analyst_timeout_seconds: int = 180
+    llm_allow_thinking: bool = False
+
     searxng_base_url: str = "http://localhost:8080/"
     searxng_query_url: str = "http://searxng:8080/search?q=<query>&format=json"
     web_search_result_count: int = 5

@@ -176,8 +176,19 @@ def coerce_movement_types(movements: pd.DataFrame) -> pd.DataFrame:
             movements[column] = pd.to_numeric(movements[column], errors="coerce")
     if "reconciled" in movements.columns:
         movements["reconciled"] = movements["reconciled"].map(lambda v: str(v).strip().lower() in {"1", "true", "t", "yes"} if pd.notna(v) else False)
+
+    if "statement_uid" not in movements.columns:
+        movements["statement_uid"] = None
+    if "source_hash" in movements.columns:
+        blank_statement_uid = movements["statement_uid"].isna() | (movements["statement_uid"].astype(str).str.strip() == "")
+        movements.loc[blank_statement_uid, "statement_uid"] = movements.loc[blank_statement_uid, "source_hash"]
+    movements["statement_uid"] = movements["statement_uid"].map(lambda v: None if pd.isna(v) or str(v).strip() == "" else str(v).strip())
+
     if "movement_uid" not in movements.columns:
-        movements["movement_uid"] = movements.apply(build_movement_uid, axis=1)
+        movements["movement_uid"] = None
+    blank_movement_uid = movements["movement_uid"].isna() | (movements["movement_uid"].astype(str).str.strip() == "")
+    if blank_movement_uid.any():
+        movements.loc[blank_movement_uid, "movement_uid"] = movements[blank_movement_uid].apply(build_movement_uid, axis=1)
     return movements
 
 
@@ -794,6 +805,9 @@ def insert_bank_movements(engine, movements: pd.DataFrame, chunksize: int = 500)
 
     frame = frame[cols].copy()
     frame = frame.where(pd.notna(frame), None)
+    for text_key in ["statement_uid", "movement_uid", "source_hash", "source_filename"]:
+        if text_key in frame.columns:
+            frame[text_key] = frame[text_key].map(lambda v: None if v is None or str(v).strip() == "" else str(v).strip())
     frame["raw_payload"] = None
 
     records = frame.to_dict(orient="records")

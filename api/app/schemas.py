@@ -20,12 +20,20 @@ class AskRequest(BaseModel):
     bank: Optional[str] = None
     filial: Optional[str] = None
     account_number: Optional[str] = None
+    conversation_id: Optional[str] = None
     use_web: bool = False
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
 class AskResponse(BaseModel):
     question: str
     filters: dict[str, Any]
+    filter_resolution: dict[str, Any] = Field(default_factory=dict)
+    route: Optional[str] = None
+    intent: Optional[str] = None
+    confidence: Optional[float] = None
+    used_llm: bool = False
+    model_used: Optional[str] = None
     used_fallback: bool
     web_used: bool
     web_allowed: bool

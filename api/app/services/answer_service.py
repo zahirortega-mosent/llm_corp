@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import json
 from typing import Any
 
+from app.router.intent_schema import Intent, RouteDecision
+from app.router.router import IntentRouter
+from app.services.answer_composer import AnswerComposer
 from app.services.llm_service import LLMService
 from app.services.policy_service import PolicyService
 from app.services.query_service import QueryService
@@ -209,6 +214,8 @@ class AnswerService:
         self.llm_service = LLMService()
         self.policy_service = PolicyService()
         self.web_search_service = WebSearchService()
+        self.intent_router = IntentRouter()
+        self.answer_composer = AnswerComposer()
 
     def answer(
         self,
@@ -216,17 +223,147 @@ class AnswerService:
         user: dict[str, Any],
         explicit_filters: dict[str, Any] | None = None,
         use_web: bool = False,
+        conversation_id: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         explicit_filters = explicit_filters or {}
+        options = options or {}
         metadata = self.query_service.get_metadata(user)
         parsed = parse_question_filters(question, metadata)
+        parsed_filters = dict(parsed.get("filters") or {})
         filters = {
-            "period": explicit_filters.get("period") or parsed.get("period"),
-            "bank": explicit_filters.get("bank") or parsed.get("bank"),
-            "filial": explicit_filters.get("filial") or parsed.get("filial"),
-            "account_number": explicit_filters.get("account_number") or parsed.get("account_number"),
+            "period": explicit_filters.get("period") or parsed_filters.get("period"),
+            "bank": explicit_filters.get("bank") or parsed_filters.get("bank"),
+            "filial": explicit_filters.get("filial") or parsed_filters.get("filial"),
+            "account_number": explicit_filters.get("account_number") or parsed_filters.get("account_number"),
+        }
+        if parsed_filters.get("periods") and not filters.get("period"):
+            filters["periods"] = parsed_filters.get("periods")
+
+        route = self.intent_router.route(question, metadata=metadata, parsed_filters=parsed)
+        route.filters.update({key: value for key, value in filters.items() if value})
+        route.entities.update({key: value for key, value in filters.items() if value})
+
+        if route.is_direct_sql:
+            return self._answer_direct_sql(
+                question=question,
+                user=user,
+                filters=filters,
+                metadata=metadata,
+                parsed=parsed,
+                route=route,
+                conversation_id=conversation_id,
+                options=options,
+            )
+
+        return self._answer_with_llm(
+            question=question,
+            user=user,
+            filters=filters,
+            metadata=metadata,
+            parsed=parsed,
+            route=route,
+            use_web=use_web,
+            conversation_id=conversation_id,
+        )
+
+    def _answer_direct_sql(
+        self,
+        question: str,
+        user: dict[str, Any],
+        filters: dict[str, Any],
+        metadata: dict[str, Any],
+        parsed: dict[str, Any],
+        route: RouteDecision,
+        conversation_id: str | None,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        max_rows = int(options.get("max_rows") or 10)
+        evidence: dict[str, Any] = {}
+        tools_used: list[str] = []
+
+        if route.intent == Intent.AVAILABLE_PERIODS:
+            evidence = self.query_service.get_available_periods_summary(user)
+            tools_used.append("get_available_periods_summary")
+        elif route.intent in {Intent.MOVEMENT_COUNT, Intent.INCIDENT_COUNT}:
+            evidence = {"summary": self.query_service.get_summary(user, filters)}
+            tools_used.append("get_summary")
+        elif route.intent in {Intent.MOVEMENT_BREAKDOWN, Intent.BANK_RANKING, Intent.FILIAL_RANKING}:
+            group_by = route.group_by or "bank"
+            evidence = {"rows": self.query_service.get_movements_breakdown(user, filters, group_by=group_by, limit=max_rows)}
+            tools_used.append("get_movements_breakdown")
+        elif route.intent == Intent.INCIDENT_BREAKDOWN:
+            group_by = route.group_by or "rule_code"
+            evidence = {"rows": self.query_service.get_incidents_breakdown(user, filters, group_by=group_by, limit=max_rows)}
+            tools_used.append("get_incidents_breakdown")
+        elif route.intent == Intent.MOVEMENT_LIST:
+            evidence = {"rows": self.query_service.get_movements(user, filters, limit=max_rows, offset=0, sort_mode="recent")}
+            tools_used.append("get_movements")
+        elif route.intent == Intent.MOVEMENT_SEARCH:
+            search_text = route.entities.get("search_text") or question
+            evidence = {"rows": self.query_service.search_movements_text(user, filters, query=search_text, limit=max_rows)}
+            tools_used.append("search_movements_text")
+        elif route.intent == Intent.REVIEW_CANDIDATES:
+            evidence = {"rows": self.query_service.get_review_candidates(user, filters, limit=max_rows)}
+            tools_used.append("get_review_candidates")
+        elif route.intent == Intent.ACCOUNT_PROFILE:
+            evidence = self.query_service.get_account_profile(user, filters, limit=max_rows)
+            tools_used.append("get_account_profile")
+        else:
+            evidence = {"summary": self.query_service.get_summary(user, filters)}
+            tools_used.append("get_summary")
+
+        answer = self.answer_composer.compose_direct(
+            question=question,
+            route=route,
+            filters=filters,
+            evidence=evidence,
+            metadata=metadata,
+        )
+        self.query_service.write_audit(
+            question,
+            filters,
+            used_fallback=False,
+            response=answer,
+            route=route.to_dict(),
+            tools_used=tools_used,
+            model_used=None,
+        )
+        return {
+            "question": question,
+            "conversation_id": conversation_id,
+            "filters": filters,
+            "filter_resolution": parsed.get("filter_resolution") or {},
+            "route": route.intent.value,
+            "intent": route.intent.value,
+            "confidence": route.confidence,
+            "used_llm": False,
+            "model_used": None,
+            "used_fallback": False,
+            "web_used": False,
+            "web_allowed": False,
+            "web_query": None,
+            "answer": answer,
+            "context": {
+                "evidence": evidence,
+                "metadata": metadata,
+                "parsed": parsed,
+                "route": route.to_dict(),
+                "tools_used": tools_used,
+            },
         }
 
+    def _answer_with_llm(
+        self,
+        question: str,
+        user: dict[str, Any],
+        filters: dict[str, Any],
+        metadata: dict[str, Any],
+        parsed: dict[str, Any],
+        route: RouteDecision,
+        use_web: bool,
+        conversation_id: str | None,
+    ) -> dict[str, Any]:
         intents = parsed.get("intents") or ["summary"]
         wants_incidents = any(intent in intents for intent in ["incidents", "priority", "summary"])
         wants_movements = any(intent in intents for intent in ["movements", "summary"])
@@ -320,6 +457,7 @@ class AnswerService:
             "owner": owner,
             "parsed": parsed,
             "metadata": metadata,
+            "route": route.to_dict(),
             "web_results": compact_web_results,
             "web_query": web_query,
         }
@@ -330,6 +468,9 @@ Pregunta del usuario:
 
 Intenciones detectadas:
 {_json_block(intents)}
+
+Ruta del router:
+{_json_block(route.to_dict())}
 
 Filtros efectivos:
 {_json_block(filters)}
@@ -392,10 +533,17 @@ Instrucción final:
             used_fallback = True
             llm_error = str(exc)
 
-        self.query_service.write_audit(question, filters, used_fallback, answer)
+        self.query_service.write_audit(question, filters, used_fallback, answer, route=route.to_dict(), model_used="configured_default_llm")
         return {
             "question": question,
+            "conversation_id": conversation_id,
             "filters": filters,
+            "filter_resolution": parsed.get("filter_resolution") or {},
+            "route": route.intent.value,
+            "intent": route.intent.value,
+            "confidence": route.confidence,
+            "used_llm": not used_fallback,
+            "model_used": "configured_default_llm" if not used_fallback else None,
             "used_fallback": used_fallback,
             "web_used": web_used,
             "web_allowed": web_allowed,

@@ -57,8 +57,40 @@ movimientos_con_cuenta AS (
 matches AS (
     SELECT
         c.id AS source_statement_id,
-        c.hash_archivo AS statement_uid,
-        c.hash_archivo AS source_hash,
+        CAST(
+            COALESCE(
+                NULLIF(LTRIM(RTRIM(CAST(c.hash_archivo AS varchar(255)))), ''),
+                CONVERT(varchar(64), HASHBYTES(
+                    'SHA2_256',
+                    CONCAT(
+                        ISNULL(CAST(c.id AS varchar(50)), ''),
+                        '|', ISNULL(CAST(c.no_cuenta AS varchar(100)), ''),
+                        '|', ISNULL(CAST(c.clabe AS varchar(100)), ''),
+                        '|', ISNULL(CAST(c.banco AS varchar(100)), ''),
+                        '|', ISNULL(CONVERT(varchar(10), CAST(c.fecha_inicial AS date), 23), ''),
+                        '|', ISNULL(CONVERT(varchar(10), CAST(c.fecha_final AS date), 23), ''),
+                        '|', ISNULL(CAST(c.nombre_archivo AS varchar(500)), '')
+                    )
+                ), 2)
+            ) AS varchar(255)
+        ) AS statement_uid,
+        CAST(
+            COALESCE(
+                NULLIF(LTRIM(RTRIM(CAST(c.hash_archivo AS varchar(255)))), ''),
+                CONVERT(varchar(64), HASHBYTES(
+                    'SHA2_256',
+                    CONCAT(
+                        ISNULL(CAST(c.id AS varchar(50)), ''),
+                        '|', ISNULL(CAST(c.no_cuenta AS varchar(100)), ''),
+                        '|', ISNULL(CAST(c.clabe AS varchar(100)), ''),
+                        '|', ISNULL(CAST(c.banco AS varchar(100)), ''),
+                        '|', ISNULL(CONVERT(varchar(10), CAST(c.fecha_inicial AS date), 23), ''),
+                        '|', ISNULL(CONVERT(varchar(10), CAST(c.fecha_final AS date), 23), ''),
+                        '|', ISNULL(CAST(c.nombre_archivo AS varchar(500)), '')
+                    )
+                ), 2)
+            ) AS varchar(255)
+        ) AS source_hash,
         c.nombre_archivo AS source_filename,
         c.no_cuenta AS account_number,
         c.clabe,

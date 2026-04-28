@@ -137,13 +137,13 @@ def knowledge(question: str = Query(..., min_length=3), limit: int = Query(defau
 @app.post("/ask")
 def ask(request: AskRequest, user: dict = Depends(require_permission("ask_internal"))) -> dict:
     explicit_filters = {"period": request.period, "bank": request.bank, "filial": request.filial, "account_number": request.account_number}
-    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=False)
+    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=False, conversation_id=request.conversation_id, options=request.options)
 
 
 @app.post("/ask/hybrid")
 def ask_hybrid(request: AskRequest, user: dict = Depends(require_permission("ask_hybrid"))) -> dict:
     explicit_filters = {"period": request.period, "bank": request.bank, "filial": request.filial, "account_number": request.account_number}
-    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=bool(request.use_web))
+    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=bool(request.use_web), conversation_id=request.conversation_id, options=request.options)
 
 
 @app.post("/chat")
@@ -153,7 +153,7 @@ def chat(request: AskRequest, user: dict = Depends(get_current_user)) -> dict:
     explicit_filters = {"period": request.period, "bank": request.bank, "filial": request.filial, "account_number": request.account_number}
     can_hybrid = "ask_hybrid" in set(user.get("permissions") or [])
     use_web = bool(request.use_web and can_hybrid)
-    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=use_web)
+    return answer_service.answer(request.question, user=user, explicit_filters=explicit_filters, use_web=use_web, conversation_id=request.conversation_id, options=request.options)
 
 
 @app.get("/admin/users")

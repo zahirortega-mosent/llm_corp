@@ -64,6 +64,32 @@ def build_movement_uid(row: pd.Series) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+
+
+def _clean_hash(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "null"} else text
+
+
+def build_statement_uid(row: pd.Series) -> str:
+    existing = _clean_hash(row.get("hash_archivo"))
+    if existing:
+        return existing
+    material = "|".join(
+        [
+            str(row.get("id") or ""),
+            str(row.get("no_cuenta") or ""),
+            str(row.get("clabe") or ""),
+            str(row.get("banco") or ""),
+            str(row.get("fecha_inicial") or ""),
+            str(row.get("fecha_final") or ""),
+            str(row.get("nombre_archivo") or ""),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
 def normalize_csv(csv_path: str | Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     csv_path = Path(csv_path)
     if not csv_path.exists():
@@ -73,12 +99,13 @@ def normalize_csv(csv_path: str | Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     bank = frame["banco"].astype(str).str.upper().str.strip()
     source_group = detect_source_group(frame)
+    statement_uids = frame.apply(build_statement_uid, axis=1)
 
     statements = pd.DataFrame(
         {
             "source_statement_id": frame["id"],
-            "statement_uid": frame["hash_archivo"],
-            "source_hash": frame["hash_archivo"],
+            "statement_uid": statement_uids,
+            "source_hash": statement_uids,
             "source_filename": frame["nombre_archivo"],
             "account_number": frame["no_cuenta"].astype(str).str.replace(r"\.0$", "", regex=True),
             "clabe": frame["clabe"].astype(str).replace("nan", pd.NA).str.replace(r"\.0$", "", regex=True),
@@ -105,7 +132,7 @@ def normalize_csv(csv_path: str | Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         {
             "source_movement_id": coalesce(frame, ["id.1", "id.2", "id.3", "id.4", "id.5", "id.6", "id.7", "id.8"]),
             "source_statement_id": frame["id"],
-            "statement_uid": frame["hash_archivo"],
+            "statement_uid": statement_uids,
             "bank_transaction_id": coalesce(
                 frame,
                 [
@@ -146,7 +173,7 @@ def normalize_csv(csv_path: str | Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
                 coalesce(frame, ["conciliado", "conciliado.1", "conciliado.2", "conciliado.3", "conciliado.4", "conciliado.5", "conciliado.6"])
             ),
             "source_filename": frame["nombre_archivo"],
-            "source_hash": frame["hash_archivo"],
+            "source_hash": statement_uids,
             "source_group": source_group,
             "raw_payload": None,
             "created_at_source": pd.to_datetime(

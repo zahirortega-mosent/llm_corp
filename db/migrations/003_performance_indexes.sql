@@ -1,0 +1,12 @@
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_bank_movements_scope ON bank_movements(period, bank, filial, account_number);
+CREATE INDEX IF NOT EXISTS idx_bank_movements_scope_amount ON bank_movements(period, bank, filial, account_number, amount DESC);
+CREATE INDEX IF NOT EXISTS idx_bank_movements_unreconciled ON bank_movements(period, bank, filial, account_number) WHERE reconciled IS FALSE OR reconciled IS NULL;
+CREATE INDEX IF NOT EXISTS idx_bank_statements_scope ON bank_statements(period, bank, filial, account_number);
+CREATE INDEX IF NOT EXISTS idx_bank_statements_mismatch ON bank_statements(period, bank, filial, account_number) WHERE statement_balance_ok IS FALSE;
+CREATE INDEX IF NOT EXISTS idx_incidents_scope ON incidents(period, bank, filial, account_number);
+CREATE INDEX IF NOT EXISTS idx_incidents_scope_severity ON incidents(period, bank, filial, account_number, severity);
+CREATE INDEX IF NOT EXISTS idx_incidents_rule_severity ON incidents(rule_code, severity);
+CREATE INDEX IF NOT EXISTS idx_bank_movements_concept_trgm ON bank_movements USING gin (concept gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_bank_movements_folio_trgm ON bank_movements USING gin (folio gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_bank_movements_entity_trgm ON bank_movements USING gin (entity_name gin_trgm_ops);
