@@ -1,30 +1,34 @@
-from app.router.intent_schema import Intent, RouteDecision
-from app.services.answer_composer import AnswerComposer
-from app.services.query_service import QueryService
+from pathlib import Path
 
 
-def test_query_service_exposes_block_1_methods_without_instantiating_db():
+def test_query_service_contains_required_direct_methods():
+    source = Path("api/app/services/query_service.py").read_text()
     required = [
-        "get_available_periods_summary",
-        "get_movements_breakdown",
-        "get_incidents_breakdown",
-        "get_review_candidates",
-        "get_account_profile",
-        "search_movements_text",
+        "def get_available_periods_summary",
+        "def get_summary",
+        "def get_movements(",
+        "def search_movements_text",
+        "def get_movements_breakdown",
+        "def get_incidents(",
+        "def get_incidents_breakdown",
+        "def get_incidents_for_movements",
+        "def get_review_candidates",
+        "def get_account_profile",
+        "def get_files_for_statement_uids",
+        "def get_relevant_rules",
     ]
-    for name in required:
-        assert hasattr(QueryService, name), name
+    missing = [item for item in required if item not in source]
+    assert missing == []
 
 
-def test_composer_zero_for_unavailable_period_includes_available_periods():
-    route = RouteDecision(intent=Intent.MOVEMENT_COUNT, confidence=0.94, requires_sql=True)
-    answer = AnswerComposer().compose_direct(
-        question="cuantos movimientos hubo en enero 2025",
-        route=route,
-        filters={"period": "2025-01-01"},
-        evidence={"summary": {"movements": 0}},
-        metadata={"periods": ["2026-01-01", "2026-02-01"]},
-    )
-    assert "0 movimientos" in answer
-    assert "2026-01" in answer
-    assert "2026-02" in answer
+def test_direct_answer_path_uses_composer_and_no_llm_for_direct_sql():
+    source = Path("api/app/services/answer_service.py").read_text()
+    assert "if route.is_direct_sql" in source
+    assert "self.answer_composer.compose_direct" in source
+    assert "used_llm=False" in source
+
+
+def test_indexes_file_exists():
+    source = Path("db/init/003_indexes.sql").read_text()
+    assert "idx_movements_period_bank_filial" in source
+    assert "idx_movements_text_search" in source

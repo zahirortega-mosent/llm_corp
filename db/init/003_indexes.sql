@@ -1,5 +1,5 @@
--- Bloque 1 - indices para rutas SQL directas de conciliacion.
--- Seguro de aplicar varias veces. No borra ni cambia columnas existentes.
+-- Bloque base critica: indices para SQL directo sin LLM.
+-- Seguro para ejecutar multiples veces sobre una base existente.
 
 CREATE INDEX IF NOT EXISTS idx_movements_period_bank_filial
 ON bank_movements(period, bank, filial);

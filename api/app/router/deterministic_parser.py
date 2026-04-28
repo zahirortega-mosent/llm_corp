@@ -20,12 +20,14 @@ INSTITUTIONAL_TERMS = (
 )
 
 GROUP_BY_ALIASES = {
-    "bank": ("por banco", "bancos", "banco"),
-    "filial": ("por filial", "filiales", "filial"),
-    "account_number": ("por cuenta", "cuentas", "cuenta"),
-    "period": ("por periodo", "por mes", "periodo", "mes"),
-    "rule_code": ("por regla", "reglas", "rule_code"),
-    "severity": ("por severidad", "por gravedad", "severidad", "gravedad"),
+    # Solo aliases que implican agrupacion. Evita tomar "banco BANBAJIO"
+    # como desglose por banco cuando realmente es filtro de banco.
+    "bank": ("por banco", "por bancos", "agrupado por banco", "desglose por banco", "ranking de bancos", "top bancos"),
+    "filial": ("por filial", "por filiales", "agrupado por filial", "desglose por filial", "ranking de filiales", "top filiales"),
+    "account_number": ("por cuenta", "por cuentas", "agrupado por cuenta", "desglose por cuenta", "ranking de cuentas", "top cuentas"),
+    "period": ("por periodo", "por periodos", "por mes", "por meses", "agrupado por periodo", "desglose por periodo"),
+    "rule_code": ("por regla", "por reglas", "por rule_code", "desglose por regla"),
+    "severity": ("por severidad", "por gravedad", "desglose por severidad", "desglose por gravedad"),
 }
 
 

@@ -53,6 +53,20 @@ def period_label(period: str | None) -> str:
     return value
 
 
+def periods_label(filters: dict[str, Any] | None) -> str:
+    filters = filters or {}
+    if filters.get("period"):
+        return period_label(filters.get("period"))
+    periods = filters.get("periods") or []
+    labels = [period_label(str(item)) for item in periods if item]
+    labels = [label for label in labels if label]
+    if not labels:
+        return "el periodo solicitado"
+    if len(labels) == 1:
+        return labels[0]
+    return ", ".join(labels[:-1]) + " y " + labels[-1]
+
+
 def available_periods_text(metadata: dict[str, Any] | None) -> str:
     metadata = metadata or {}
     periods = metadata.get("periods") or metadata.get("available_periods") or []
@@ -122,6 +136,16 @@ class AnswerComposer:
             return self.account_profile(filters, evidence, metadata)
         return self.summary(filters, evidence, metadata)
 
+    def clarification_needed(self, filters: dict[str, Any], metadata: dict[str, Any] | None, resolution: dict[str, Any]) -> str:
+        candidates = resolution.get("candidate_period_labels") or [str(item)[:7] for item in resolution.get("candidate_periods", [])]
+        if candidates:
+            return "El mes solicitado existe en varios años. Indica cuál periodo quieres usar: " + ", ".join(candidates) + "."
+        return "Necesito que indiques el periodo exacto para responder sin inferir. Periodos disponibles: " + available_periods_text(metadata) + "."
+
+    def unavailable_month(self, filters: dict[str, Any], metadata: dict[str, Any] | None, resolution: dict[str, Any], metric: str = "movimientos") -> str:
+        month_name = resolution.get("month_name") or "ese mes"
+        return f"No hay {metric} registrados para {month_name} en los datos cargados. Los periodos disponibles actualmente son {available_periods_text(metadata)}."
+
     def available_periods(self, evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         periods = evidence.get("periods") or (metadata or {}).get("periods") or []
         text = available_periods_text({"periods": periods})
@@ -139,21 +163,21 @@ class AnswerComposer:
     def movement_count(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         summary = evidence.get("summary") or evidence
         count = integer(summary.get("movements"))
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         suffix = self._period_unavailable_suffix(filters, metadata)
         return f"En {period} hay {count:,} movimientos registrados en los datos cargados.{suffix}"
 
     def incident_count(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         summary = evidence.get("summary") or evidence
         count = integer(summary.get("incidents"))
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         suffix = self._period_unavailable_suffix(filters, metadata)
         return f"En {period} hay {count:,} incidencias registradas en los datos cargados.{suffix}"
 
     def movement_breakdown(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None, group_by: str | None) -> str:
         rows = evidence.get("rows") or []
         label = GROUP_LABELS.get(group_by or "", group_by or "dimension")
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         if not rows:
             return f"No encontre movimientos para desglosar por {label} en {period}.{self._period_unavailable_suffix(filters, metadata)}"
         lines = _top_lines(rows, "movements", group_by)
@@ -162,7 +186,7 @@ class AnswerComposer:
     def incident_breakdown(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None, group_by: str | None) -> str:
         rows = evidence.get("rows") or []
         label = GROUP_LABELS.get(group_by or "", group_by or "dimension")
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         if not rows:
             return f"No encontre incidencias para desglosar por {label} en {period}.{self._period_unavailable_suffix(filters, metadata)}"
         lines = _top_lines(rows, "incidents", group_by)
@@ -170,7 +194,7 @@ class AnswerComposer:
 
     def movement_list(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         rows = evidence.get("rows") or []
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         if not rows:
             return f"No encontre movimientos para listar en {period}.{self._period_unavailable_suffix(filters, metadata)}"
         lines = []
@@ -187,7 +211,7 @@ class AnswerComposer:
 
     def movement_search(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None, search_text: str | None) -> str:
         rows = evidence.get("rows") or []
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         term = f" con texto '{search_text}'" if search_text else ""
         if not rows:
             return f"No encontre movimientos{term} en {period}.{self._period_unavailable_suffix(filters, metadata)}"
@@ -195,7 +219,7 @@ class AnswerComposer:
 
     def review_candidates(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         rows = evidence.get("rows") or []
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         if not rows:
             return f"No encontre cuentas candidatas para revisar en {period}.{self._period_unavailable_suffix(filters, metadata)}"
         lines = []
@@ -231,7 +255,7 @@ class AnswerComposer:
 
     def summary(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         summary = evidence.get("summary") or evidence
-        period = period_label(filters.get("period"))
+        period = periods_label(filters)
         return (
             f"Resumen de {period}: {integer(summary.get('movements')):,} movimientos, "
             f"{integer(summary.get('incidents')):,} incidencias, "

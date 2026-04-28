@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     llm_enabled: bool = True
     ollama_base_url: str = "http://host.docker.internal:11434"
-    ollama_model: str = "qwen3:8b"
+    ollama_model: str = "qwen3:14b"
     ollama_timeout_seconds: int = 180
     llm_max_tokens: int = 900
     llm_temperature: float = 0.1

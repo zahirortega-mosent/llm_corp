@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.config import get_settings
 from app.router.intent_schema import Intent, RouteDecision
 from app.router.router import IntentRouter
+from app.router.llm_classifier import LLMClassifier
 from app.services.answer_composer import AnswerComposer
+from app.services.context_builder import ContextBuilder
 from app.services.llm_service import LLMService
+from app.services.model_selector import ModelSelector
 from app.services.policy_service import PolicyService
 from app.services.query_service import QueryService
 from app.services.web_search_service import WebSearchService
@@ -326,6 +330,10 @@ class AnswerService:
         self.web_search_service = WebSearchService()
         self.intent_router = IntentRouter()
         self.answer_composer = AnswerComposer()
+        self.model_selector = ModelSelector()
+        self.context_builder = ContextBuilder()
+        self.llm_classifier = LLMClassifier(self.llm_service, self.model_selector)
+        self.settings = get_settings()
 
     def answer(
         self,
@@ -351,8 +359,77 @@ class AnswerService:
             filters["periods"] = parsed_filters.get("periods")
 
         route = self.intent_router.route(question, metadata=metadata, parsed_filters=parsed)
+        if route.requires_llm_classifier and self.settings.enable_llm_classifier:
+            classified_route = self.llm_classifier.classify(question, metadata=metadata)
+            if classified_route and classified_route.confidence >= route.confidence:
+                route = classified_route
+
         route.filters.update({key: value for key, value in filters.items() if value})
         route.entities.update({key: value for key, value in filters.items() if value})
+
+        filter_resolution = parsed.get("filter_resolution") or {}
+        if filter_resolution.get("clarification_needed"):
+            clarification_route = RouteDecision(
+                intent=Intent.CLARIFICATION,
+                confidence=1.0,
+                filters=filters,
+                filter_resolution=filter_resolution,
+                reason="period_clarification_needed",
+                clarification_needed=True,
+            )
+            answer = self.answer_composer.clarification_needed(filters, metadata, filter_resolution)
+            return _build_chat_response(
+                question=question,
+                conversation_id=conversation_id,
+                filters=filters,
+                parsed=parsed,
+                route=clarification_route,
+                answer=answer,
+                metadata=metadata,
+                evidence={},
+                tools_used=[],
+                used_llm=False,
+                model_used=None,
+                used_fallback=False,
+                web_used=False,
+                web_allowed=False,
+                web_query=None,
+                debug=_debug_enabled(options),
+                context={"parsed": parsed, "metadata": metadata, "route": clarification_route.to_dict()},
+            )
+
+        if filter_resolution.get("available_period_not_found") and not filters.get("period") and not filters.get("periods") and route.is_direct_sql:
+            metric = "incidencias" if route.intent in {Intent.INCIDENT_COUNT, Intent.INCIDENT_BREAKDOWN} else "movimientos"
+            unavailable_route = RouteDecision(
+                intent=route.intent,
+                confidence=route.confidence,
+                requires_sql=False,
+                metric=route.metric,
+                group_by=route.group_by,
+                filters=filters,
+                filter_resolution=filter_resolution,
+                reason="month_not_available_without_year",
+            )
+            answer = self.answer_composer.unavailable_month(filters, metadata, filter_resolution, metric=metric)
+            return _build_chat_response(
+                question=question,
+                conversation_id=conversation_id,
+                filters=filters,
+                parsed=parsed,
+                route=unavailable_route,
+                answer=answer,
+                metadata=metadata,
+                evidence={},
+                tools_used=[],
+                used_llm=False,
+                model_used=None,
+                used_fallback=False,
+                web_used=False,
+                web_allowed=False,
+                web_query=None,
+                debug=_debug_enabled(options),
+                context={"parsed": parsed, "metadata": metadata, "route": unavailable_route.to_dict()},
+            )
 
         if route.is_direct_sql:
             return self._answer_direct_sql(
@@ -593,54 +670,25 @@ class AnswerService:
             "tools_used": tools_used,
         }
 
+        model_decision = self.model_selector.select(route, context)
+        context["model_decision"] = {
+            "model": model_decision.model,
+            "use_llm": model_decision.use_llm,
+            "reason": model_decision.reason,
+            "max_context_tokens": model_decision.max_context_tokens,
+            "timeout_seconds": model_decision.timeout_seconds,
+        }
+        compact_context = self.context_builder.build_context_for_prompt(
+            context,
+            max_context_tokens=model_decision.max_context_tokens,
+        )
+
         user_prompt = f"""
 Pregunta del usuario:
 {question}
 
-Intenciones detectadas:
-{_json_block(intents)}
-
-Ruta del router:
-{_json_block(route.to_dict())}
-
-Filtros efectivos:
-{_json_block(filters)}
-
-Resumen interno:
-{_json_block(summary)}
-
-Incidencias agregadas:
-{_json_block(incident_summary[:8])}
-
-Incidencias foco:
-{_json_block(focus_incidents)}
-
-Archivos foco:
-{_json_block(focus_files)}
-
-Movimientos recientes:
-{_json_block(compact_recent_movements[:8])}
-
-Movimientos de mayor importe:
-{_json_block(compact_largest_movements[:8])}
-
-Top cuentas por incidencias:
-{_json_block(top_accounts[:6])}
-
-Top cuentas por movimientos:
-{_json_block(top_entities[:6])}
-
-Reglas relevantes:
-{_json_block(rules[:5])}
-
-Conocimiento indexado:
-{_json_block(compact_knowledge[:5])}
-
-Responsable sugerido:
-{_json_block(owner)}
-
-Consulta web de apoyo:
-{_json_block({'enabled': web_allowed, 'used': web_used, 'query': web_query, 'results': compact_web_results})}
+Evidencia interna compactada:
+{_json_block(compact_context)}
 
 Instrucción final:
 1. Contesta en tono natural y directo.
@@ -655,7 +703,13 @@ Instrucción final:
         used_fallback = False
         llm_error = None
         try:
-            answer = self.llm_service.generate(SYSTEM_PROMPT, user_prompt)
+            answer = self.llm_service.generate(
+                SYSTEM_PROMPT,
+                user_prompt,
+                model=model_decision.model,
+                timeout_seconds=model_decision.timeout_seconds,
+                temperature=model_decision.temperature,
+            )
             if not answer:
                 answer = _fallback_answer(question, filters, context, web_allowed=web_allowed, web_used=web_used)
                 used_fallback = True
@@ -671,7 +725,7 @@ Instrucción final:
             answer,
             route=route.to_dict(),
             tools_used=tools_used,
-            model_used="configured_default_llm",
+            model_used=model_decision.model,
         )
         debug = _debug_enabled(options)
         evidence = {
@@ -689,7 +743,7 @@ Instrucción final:
             evidence=evidence,
             tools_used=tools_used,
             used_llm=not used_fallback,
-            model_used="configured_default_llm" if not used_fallback else None,
+            model_used=model_decision.model if not used_fallback else None,
             used_fallback=used_fallback,
             web_used=web_used,
             web_allowed=web_allowed,
