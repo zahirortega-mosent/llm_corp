@@ -583,6 +583,8 @@ class QueryService:
         route: dict[str, Any] | None = None,
         tools_used: list[str] | None = None,
         model_used: str | None = None,
+        username: str | None = None,
+        conversation_id: str | None = None,
     ) -> None:
         sql = text(
             """
@@ -597,6 +599,10 @@ class QueryService:
             audit_filters["tools_used"] = tools_used
         if model_used:
             audit_filters["model_used"] = model_used
+        if username:
+            audit_filters["username"] = username
+        if conversation_id:
+            audit_filters["conversation_id"] = conversation_id
         with self.engine.begin() as conn:
             conn.execute(
                 sql,

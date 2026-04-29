@@ -9,6 +9,8 @@ from app.router.router import IntentRouter
 from app.router.llm_classifier import LLMClassifier
 from app.services.answer_composer import AnswerComposer
 from app.services.context_builder import ContextBuilder
+from app.services.context_resolver import ContextResolver, ResolvedContext
+from app.services.conversation_service import ConversationService
 from app.services.llm_service import LLMService
 from app.services.model_selector import ModelSelector
 from app.services.policy_service import PolicyService
@@ -111,6 +113,98 @@ def _short_periods(periods: list[Any] | tuple[Any, ...] | None) -> list[str]:
 
 def _clean_filters(filters: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in (filters or {}).items() if value not in (None, "", [], {})}
+
+
+
+def _merge_filter_resolution(parsed: dict[str, Any], resolved_context: ResolvedContext | None) -> dict[str, Any]:
+    resolution = dict((parsed or {}).get("filter_resolution") or {})
+    if not resolved_context:
+        return resolution
+    resolution.update({
+        "inherits_previous_context": bool(resolved_context.inherited_previous_context),
+        "context_resolution_reason": resolved_context.reason,
+    })
+    if resolved_context.result_ref:
+        resolution["referenced_previous_result_index"] = resolved_context.result_ref.get("index")
+    return resolution
+
+
+def _apply_resolved_filters(parsed: dict[str, Any], resolved_context: ResolvedContext | None) -> dict[str, Any]:
+    if not resolved_context or not resolved_context.filters:
+        return parsed
+    merged = dict(parsed or {})
+    filters = dict(merged.get("filters") or {})
+    for key, value in resolved_context.filters.items():
+        if value not in (None, "", [], {}):
+            filters[key] = value
+            if key in {"period", "periods", "bank", "filial", "account_number"}:
+                merged[key] = value
+    merged["filters"] = filters
+    merged["filter_resolution"] = _merge_filter_resolution(merged, resolved_context)
+    return merged
+
+
+def _row_reference(row: dict[str, Any], index: int) -> dict[str, Any]:
+    keys = [
+        "bank",
+        "filial",
+        "account_number",
+        "period",
+        "movement_uid",
+        "incident_uid",
+        "statement_uid",
+        "source_filename",
+        "rule_code",
+        "severity",
+        "movements",
+        "incidents",
+        "critical_incidents",
+        "high_incidents",
+        "review_score",
+    ]
+    ref = {"index": index}
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, "", [], {}):
+            ref[key] = value
+    label_parts = []
+    for key in ["bank", "filial", "account_number", "rule_code"]:
+        if ref.get(key):
+            label_parts.append(str(ref[key]))
+    if label_parts:
+        ref["label"] = " / ".join(label_parts)
+    return ref
+
+
+def _extract_result_refs(evidence: dict[str, Any] | None, limit: int = 10) -> list[dict[str, Any]]:
+    evidence = evidence or {}
+    rows: list[dict[str, Any]] = []
+    if isinstance(evidence.get("rows"), list):
+        rows.extend([item for item in evidence["rows"] if isinstance(item, dict)])
+    if isinstance(evidence.get("recent_movements"), list):
+        rows.extend([item for item in evidence["recent_movements"] if isinstance(item, dict)])
+    profile = evidence.get("profile")
+    if isinstance(profile, dict):
+        rows.insert(0, profile)
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in rows:
+        ref = _row_reference(row, len(refs) + 1)
+        identity = (
+            ref.get("account_number"),
+            ref.get("movement_uid"),
+            ref.get("incident_uid"),
+            ref.get("statement_uid"),
+            ref.get("bank"),
+            ref.get("filial"),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        refs.append(ref)
+        if len(refs) >= limit:
+            break
+    return refs
 
 
 def _public_metadata(
@@ -332,6 +426,8 @@ class AnswerService:
         self.answer_composer = AnswerComposer()
         self.model_selector = ModelSelector()
         self.context_builder = ContextBuilder()
+        self.conversation_service = ConversationService()
+        self.context_resolver = ContextResolver()
         self.llm_classifier = LLMClassifier(self.llm_service, self.model_selector)
         self.settings = get_settings()
 
@@ -347,7 +443,23 @@ class AnswerService:
         explicit_filters = explicit_filters or {}
         options = options or {}
         metadata = self.query_service.get_metadata(user)
-        parsed = parse_question_filters(question, metadata)
+        original_parsed = parse_question_filters(question, metadata)
+        conversation_state = None
+        resolved_context: ResolvedContext | None = None
+        if self.settings.enable_context_resolver and conversation_id:
+            conversation_state = self.conversation_service.get_state(str(user.get("username") or ""), conversation_id)
+            resolved_context = self.context_resolver.resolve(
+                question,
+                conversation_state=conversation_state,
+                metadata=metadata,
+                parsed_filters=original_parsed,
+            )
+        else:
+            resolved_context = ResolvedContext(question, question, reason="context_resolver_disabled")
+
+        effective_question = resolved_context.effective_question or question
+        parsed = original_parsed if effective_question == question else parse_question_filters(effective_question, metadata)
+        parsed = _apply_resolved_filters(parsed, resolved_context)
         parsed_filters = dict(parsed.get("filters") or {})
         filters = {
             "period": explicit_filters.get("period") or parsed_filters.get("period"),
@@ -358,9 +470,9 @@ class AnswerService:
         if parsed_filters.get("periods") and not filters.get("period"):
             filters["periods"] = parsed_filters.get("periods")
 
-        route = self.intent_router.route(question, metadata=metadata, parsed_filters=parsed)
+        route = resolved_context.route_override or self.intent_router.route(effective_question, metadata=metadata, parsed_filters=parsed)
         if route.requires_llm_classifier and self.settings.enable_llm_classifier:
-            classified_route = self.llm_classifier.classify(question, metadata=metadata)
+            classified_route = self.llm_classifier.classify(effective_question, metadata=metadata, conversation_state=conversation_state)
             if classified_route and classified_route.confidence >= route.confidence:
                 route = classified_route
 
@@ -455,6 +567,31 @@ class AnswerService:
             options=options,
         )
 
+    def _save_conversation_state(
+        self,
+        *,
+        conversation_id: str | None,
+        user: dict[str, Any],
+        question: str,
+        route: RouteDecision,
+        filters: dict[str, Any],
+        evidence: dict[str, Any] | None,
+        answer: str,
+    ) -> None:
+        if not self.settings.enable_context_resolver or not conversation_id:
+            return
+        self.conversation_service.save_state(
+            username=str(user.get("username") or ""),
+            conversation_id=conversation_id,
+            last_question=question,
+            last_intent=route.intent.value,
+            last_filters=_clean_filters(filters),
+            last_entities=route.entities,
+            last_route=route.to_dict(),
+            last_result_refs=_extract_result_refs(evidence),
+            last_answer_summary=answer,
+        )
+
     def _answer_direct_sql(
         self,
         question: str,
@@ -516,6 +653,17 @@ class AnswerService:
             route=route.to_dict(),
             tools_used=tools_used,
             model_used=None,
+            username=str(user.get("username") or ""),
+            conversation_id=conversation_id,
+        )
+        self._save_conversation_state(
+            conversation_id=conversation_id,
+            user=user,
+            question=question,
+            route=route,
+            filters=filters,
+            evidence=evidence,
+            answer=answer,
         )
         debug = _debug_enabled(options)
         context = {
@@ -726,12 +874,23 @@ Instrucción final:
             route=route.to_dict(),
             tools_used=tools_used,
             model_used=model_decision.model,
+            username=str(user.get("username") or ""),
+            conversation_id=conversation_id,
         )
         debug = _debug_enabled(options)
         evidence = {
             "summary": summary,
-            "rows": compact_recent_movements or incident_summary or compact_knowledge or [],
+            "rows": top_accounts or top_entities or compact_recent_movements or incident_summary or compact_knowledge or [],
         }
+        self._save_conversation_state(
+            conversation_id=conversation_id,
+            user=user,
+            question=question,
+            route=route,
+            filters=filters,
+            evidence=evidence,
+            answer=answer,
+        )
         return _build_chat_response(
             question=question,
             conversation_id=conversation_id,

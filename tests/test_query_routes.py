@@ -32,3 +32,18 @@ def test_indexes_file_exists():
     source = Path("db/init/003_indexes.sql").read_text()
     assert "idx_movements_period_bank_filial" in source
     assert "idx_movements_text_search" in source
+
+
+def test_block3_conversation_files_exist():
+    assert Path("api/app/services/conversation_service.py").exists()
+    assert Path("api/app/services/context_resolver.py").exists()
+    assert Path("db/init/005_conversation_state.sql").exists()
+    assert Path("db/migrations/005_conversation_state.sql").exists()
+
+
+def test_answer_service_persists_conversation_state_when_enabled():
+    source = Path("api/app/services/answer_service.py").read_text()
+    assert "ConversationService" in source
+    assert "ContextResolver" in source
+    assert "_save_conversation_state" in source
+    assert "conversation_id=conversation_id" in source

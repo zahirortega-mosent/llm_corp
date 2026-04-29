@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     enable_llm_classifier: bool = False
     enable_institutional_memory: bool = False
     enable_scope_enforcement: bool = False
-    enable_context_resolver: bool = False
+    enable_context_resolver: bool = True
 
     llm_fast_model: str = "qwen3:4b"
     llm_analyst_model: str = "qwen3:14b"
