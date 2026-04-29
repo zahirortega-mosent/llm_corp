@@ -1,6 +1,4 @@
--- Bloque 3 - estado conversacional persistente para follow-ups.
--- Ejecuta tambien db/migrations/005_conversation_state.sql en bases ya creadas.
-
+-- Bloque 3 - Estado conversacional persistente
 CREATE TABLE IF NOT EXISTS conversation_state (
     conversation_id TEXT NOT NULL,
     username TEXT NOT NULL,

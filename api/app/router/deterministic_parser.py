@@ -15,8 +15,16 @@ SEARCH_TERMS = ("busca", "buscar", "contenga", "contienen", "texto", "descripcio
 REVIEW_TERMS = ("revisar", "revision", "prioridad", "prioridades", "sugerida", "sugeridas", "recomendadas", "criticas", "criticos")
 AVAILABLE_PERIOD_TERMS = ("periodos disponibles", "meses disponibles", "periodos cargados", "que periodos", "cuales periodos", "catalogo de periodos")
 INSTITUTIONAL_TERMS = (
-    "proceso", "flujo", "responsable", "autoriza", "politica", "procedimiento", "regla interna",
-    "area", "escalamiento", "manual", "como se hace", "que significa", "sla", "matriz de aprobacion",
+    "memoria institucional", "fuente interna", "documento aprobado", "documentacion aprobada",
+    "proceso", "procesos", "flujo", "flujos", "responsable", "responsables",
+    "quien", "quien ve", "quien revisa", "quien autoriza", "autoriza", "aprobacion",
+    "politica", "politicas", "procedimiento", "procedimientos", "regla interna", "reglas internas",
+    "area", "areas", "escalamiento", "escalar", "manual", "manuales", "faq", "glosario",
+    "como se hace", "como se hace normalmente", "que significa", "significa internamente",
+    "sla", "matriz de aprobacion", "matriz de autorizacion", "excepcion", "excepciones",
+    "desarrollador", "desarrolladora", "creador", "creadora", "autor", "autora",
+    "propietario", "propietaria", "dueno", "duena", "owner", "declarado", "declarada",
+    "vigencia", "hasta cuando", "version documental",
 )
 
 GROUP_BY_ALIASES = {

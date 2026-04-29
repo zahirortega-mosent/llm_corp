@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     enable_institutional_memory: bool = False
     enable_scope_enforcement: bool = False
     enable_context_resolver: bool = True
+    institutional_memory_top_k: int = 5
+    institutional_memory_require_approved: bool = True
+    institutional_memory_enable_vector: bool = False
+    institutional_memory_chunk_size: int = 1200
+    institutional_memory_chunk_overlap: int = 150
+    institutional_memory_vector_dim: int = 1024
 
     llm_fast_model: str = "qwen3:4b"
     llm_analyst_model: str = "qwen3:14b"

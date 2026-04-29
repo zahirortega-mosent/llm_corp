@@ -37,6 +37,41 @@ class ContextBuilder:
             compact.append(item)
         return compact
 
+    def compact_institutional_chunks(
+        self,
+        chunks: list[dict[str, Any]],
+        *,
+        max_context_tokens: int,
+        per_chunk_chars: int = 900,
+    ) -> list[dict[str, Any]]:
+        """Incluye solo evidencia institucional relevante, no documentos completos."""
+        budget_chars = max(1000, max_context_tokens * self.chars_per_token)
+        compact: list[dict[str, Any]] = []
+        used_chars = 0
+        for chunk in chunks:
+            item = {
+                "chunk_id": chunk.get("chunk_id"),
+                "document_id": chunk.get("document_id"),
+                "chunk_index": chunk.get("chunk_index"),
+                "title": chunk.get("title"),
+                "content": self.trim_text(chunk.get("content"), per_chunk_chars),
+                "source_type": chunk.get("source_type"),
+                "source_path": chunk.get("source_path"),
+                "owner_area": chunk.get("owner_area"),
+                "status": chunk.get("status"),
+                "version": chunk.get("version"),
+                "valid_from": chunk.get("valid_from"),
+                "valid_to": chunk.get("valid_to"),
+                "rank": chunk.get("rank"),
+                "search_mode": chunk.get("search_mode"),
+            }
+            size = len(str(item))
+            if used_chars + size > budget_chars:
+                break
+            compact.append(item)
+            used_chars += size
+        return compact
+
     def build_context_for_prompt(self, context: dict[str, Any], max_context_tokens: int) -> dict[str, Any]:
         budget_chars = max(1000, max_context_tokens * self.chars_per_token)
         result: dict[str, Any] = {}
@@ -45,6 +80,8 @@ class ContextBuilder:
             "parsed",
             "metadata",
             "summary",
+            "institutional_evidence",
+            "institutional_sources",
             "incident_summary",
             "focus_incidents",
             "focus_files",
@@ -63,7 +100,9 @@ class ContextBuilder:
             if key not in context:
                 continue
             value = context[key]
-            if isinstance(value, list) and value and isinstance(value[0], dict):
+            if key == "institutional_evidence" and isinstance(value, list):
+                value = self.compact_institutional_chunks(value, max_context_tokens=max_context_tokens)
+            elif isinstance(value, list) and value and isinstance(value[0], dict):
                 value = self.compact_rows(value)
             if isinstance(value, str):
                 value = self.trim_text(value, 800)

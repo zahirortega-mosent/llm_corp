@@ -1,5 +1,4 @@
--- Bloque 3 - migracion segura para bases existentes.
-
+-- Bloque 3 - Estado conversacional persistente
 CREATE TABLE IF NOT EXISTS conversation_state (
     conversation_id TEXT NOT NULL,
     username TEXT NOT NULL,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
@@ -12,6 +13,7 @@ from app.services.context_builder import ContextBuilder
 from app.services.context_resolver import ContextResolver, ResolvedContext
 from app.services.conversation_service import ConversationService
 from app.services.llm_service import LLMService
+from app.services.knowledge_service import KnowledgeService
 from app.services.model_selector import ModelSelector
 from app.services.policy_service import PolicyService
 from app.services.query_service import QueryService
@@ -263,6 +265,7 @@ def _build_chat_response(
     debug: bool,
     context: dict[str, Any] | None = None,
     llm_error: str | None = None,
+    used_memory: bool | None = None,
 ) -> dict[str, Any]:
     response: dict[str, Any] = {
         "question": question,
@@ -274,7 +277,7 @@ def _build_chat_response(
         "confidence": route.confidence,
         "used_llm": used_llm,
         "model_used": model_used,
-        "used_memory": bool(route.requires_memory),
+        "used_memory": bool(route.requires_memory) if used_memory is None else bool(used_memory),
         "used_fallback": used_fallback,
         "web_used": web_used,
         "web_allowed": web_allowed,
@@ -420,6 +423,7 @@ class AnswerService:
     def __init__(self) -> None:
         self.query_service = QueryService()
         self.llm_service = LLMService()
+        self.knowledge_service = KnowledgeService()
         self.policy_service = PolicyService()
         self.web_search_service = WebSearchService()
         self.intent_router = IntentRouter()
@@ -545,6 +549,18 @@ class AnswerService:
 
         if route.is_direct_sql:
             return self._answer_direct_sql(
+                question=question,
+                user=user,
+                filters=filters,
+                metadata=metadata,
+                parsed=parsed,
+                route=route,
+                conversation_id=conversation_id,
+                options=options,
+            )
+
+        if route.requires_memory:
+            return self._answer_institutional(
                 question=question,
                 user=user,
                 filters=filters,
@@ -691,6 +707,128 @@ class AnswerService:
             web_query=None,
             debug=debug,
             context=context,
+        )
+
+    def _answer_institutional(
+        self,
+        question: str,
+        user: dict[str, Any],
+        filters: dict[str, Any],
+        metadata: dict[str, Any],
+        parsed: dict[str, Any],
+        route: RouteDecision,
+        conversation_id: str | None,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        options = options or {}
+        memory_enabled = bool(self.settings.enable_institutional_memory)
+        max_chunks = int(options.get("memory_top_k") or self.settings.institutional_memory_top_k)
+        tools_used: list[str] = []
+        evidence: list[dict[str, Any]] = []
+        if memory_enabled:
+            evidence = self.knowledge_service.search(
+                question,
+                user=user,
+                limit=max_chunks,
+                require_approved=self.settings.institutional_memory_require_approved,
+            )
+            tools_used.append("knowledge_service.search")
+
+        model_decision = self.model_selector.select(route, {"institutional_evidence": evidence})
+        compact_context = self.context_builder.build_context_for_prompt(
+            {
+                "institutional_evidence": evidence,
+                "parsed": parsed,
+                "metadata": metadata,
+                "route": route.to_dict(),
+                "tools_used": tools_used,
+            },
+            max_context_tokens=model_decision.max_context_tokens or min(self.settings.llm_default_context, 4096),
+        )
+
+        generated_answer: str | None = None
+        used_fallback = False
+        llm_error = None
+        if evidence and model_decision.use_llm:
+            try:
+                prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "institutional_answer.md"
+                system_prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else SYSTEM_PROMPT
+                user_prompt = f"""
+Pregunta institucional:
+{question}
+
+Evidencia institucional aprobada y compactada:
+{_json_block(compact_context)}
+
+Instruccion final:
+Responde solo con la evidencia anterior. Si falta evidencia para algun dato, dilo claramente.
+"""
+                generated_answer = self.llm_service.generate(
+                    system_prompt,
+                    user_prompt,
+                    model=model_decision.model,
+                    timeout_seconds=model_decision.timeout_seconds,
+                    temperature=model_decision.temperature,
+                )
+                if not generated_answer:
+                    used_fallback = True
+            except Exception as exc:
+                used_fallback = True
+                llm_error = str(exc)
+
+        answer = self.answer_composer.institutional_answer(
+            question,
+            evidence,
+            generated_answer=generated_answer,
+            memory_enabled=memory_enabled,
+        )
+        audit_route = route.to_dict()
+        audit_route["memory_chunks_used"] = [
+            {"chunk_id": item.get("chunk_id"), "document_id": item.get("document_id"), "title": item.get("title")}
+            for item in evidence
+        ]
+        self.query_service.write_audit(
+            question,
+            filters,
+            used_fallback=used_fallback,
+            response=answer,
+            route=audit_route,
+            tools_used=tools_used,
+            model_used=model_decision.model if generated_answer else None,
+            username=str(user.get("username") or ""),
+            conversation_id=conversation_id,
+        )
+        evidence_bundle = {"institutional_chunks": evidence, "rows": evidence}
+        self._save_conversation_state(
+            conversation_id=conversation_id,
+            user=user,
+            question=question,
+            route=route,
+            filters=filters,
+            evidence=evidence_bundle,
+            answer=answer,
+        )
+        debug = _debug_enabled(options)
+        return _build_chat_response(
+            question=question,
+            conversation_id=conversation_id,
+            filters=filters,
+            parsed=parsed,
+            route=route,
+            answer=answer,
+            metadata=metadata,
+            evidence=evidence_bundle,
+            tools_used=tools_used,
+            used_llm=bool(generated_answer),
+            model_used=model_decision.model if generated_answer else None,
+            used_fallback=used_fallback,
+            web_used=False,
+            web_allowed=False,
+            web_query=None,
+            debug=debug,
+            context={"institutional_evidence": evidence, "compact_context": compact_context, "route": route.to_dict()},
+            llm_error=llm_error,
+            used_memory=bool(evidence),
         )
 
     def _answer_with_llm(

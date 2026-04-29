@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.router.intent_schema import Intent, RouteDecision
+from app.utils.filters import normalize_text
 
 SPANISH_MONTHS = {
     "01": "enero",
@@ -252,6 +254,82 @@ class AnswerComposer:
         if movements:
             lines.append(f"Movimiento reciente destacado: {movements[0].get('movement_date')} | {money(movements[0].get('amount'))} | {movements[0].get('description') or movements[0].get('concept') or 'sin descripcion'}.")
         return "\n".join(lines)
+
+    def institutional_answer(
+        self,
+        question: str,
+        evidence: list[dict[str, Any]],
+        *,
+        generated_answer: str | None = None,
+        memory_enabled: bool = True,
+    ) -> str:
+        if not memory_enabled:
+            return (
+                "La memoria institucional esta desactivada por configuracion "
+                "(ENABLE_INSTITUTIONAL_MEMORY=false). No puedo responder sobre procesos, "
+                "responsables o politicas internas hasta activarla y cargar documentos aprobados."
+            )
+        if not evidence:
+            return (
+                "No hay memoria institucional aprobada suficiente para responder esa pregunta. "
+                "No voy a inventar responsables, politicas, procesos ni procedimientos sin una fuente interna aprobada."
+            )
+
+        base = (generated_answer or "").strip()
+        if not base:
+            first = evidence[0]
+            excerpt = self._best_evidence_excerpt(question, str(first.get("content") or ""))
+            base = (
+                "Segun la evidencia institucional aprobada recuperada:\n"
+                f"- {excerpt}"
+            )
+
+        source_lines = []
+        seen: set[tuple[Any, Any]] = set()
+        for item in evidence[:5]:
+            identity = (item.get("document_id"), item.get("chunk_index"))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            details = []
+            if item.get("owner_area"):
+                details.append(f"area: {item['owner_area']}")
+            if item.get("version"):
+                details.append(f"version: {item['version']}")
+            if item.get("status"):
+                details.append(f"status: {item['status']}")
+            if item.get("valid_from") or item.get("valid_to"):
+                details.append(f"vigencia: {item.get('valid_from') or 'sin inicio'} a {item.get('valid_to') or 'sin fin'}")
+            details.append(f"chunk: {item.get('chunk_index')}")
+            if item.get("source_path"):
+                details.append(f"ruta: {item.get('source_path')}")
+            source_lines.append(f"- {item.get('title') or 'Documento institucional'} ({'; '.join(details)})")
+
+        limitations = (
+            "Limitaciones: respuesta basada solo en memoria institucional aprobada recuperada; "
+            "si falta una politica, responsable o procedimiento en esas fuentes, no se asume."
+        )
+        return base + "\n\nFuentes internas usadas:\n" + "\n".join(source_lines) + "\n\n" + limitations + "\n"
+
+    def _best_evidence_excerpt(self, question: str, content: str) -> str:
+        cleaned = re.sub(r"\s+", " ", content).strip()
+        if not cleaned:
+            return "se recupero una fuente interna, pero el chunk no contiene texto visible."
+        q_tokens = {
+            token for token in re.findall(r"[a-zA-Z0-9]+", normalize_text(question))
+            if len(token) > 2 and token not in {"que", "quien", "cual", "del", "con", "para", "segun", "memoria", "institucional", "aprobada"}
+        }
+        parts = [part.strip(" -#") for part in re.split(r"(?<=[.!?])\s+|\n+", content) if part.strip(" -#")]
+        if not parts:
+            parts = [cleaned]
+
+        def score(part: str) -> int:
+            p_tokens = set(re.findall(r"[a-zA-Z0-9]+", normalize_text(part)))
+            return len(q_tokens & p_tokens)
+
+        best = sorted(parts, key=lambda part: (score(part), len(part)), reverse=True)[0]
+        best = re.sub(r"\s+", " ", best).strip()
+        return best[:900] + ("..." if len(best) > 900 else "")
 
     def summary(self, filters: dict[str, Any], evidence: dict[str, Any], metadata: dict[str, Any] | None) -> str:
         summary = evidence.get("summary") or evidence
